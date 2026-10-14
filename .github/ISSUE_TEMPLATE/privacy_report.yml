@@ -1,0 +1,295 @@
+name: Privacy concern
+description: Report something this app records, stores, exports or leaves behind that worries you. Designed so you can file it without exposing more of your machine than necessary.
+labels:
+  - privacy
+body:
+  - type: markdown
+    attributes:
+      value: |
+        # Privacy concern report
+
+        This app is a local audit tool. To do its job it records **your own machine's
+        process paths, working directories, command-line arguments, changed file paths,
+        content hashes and plaintext diff snippets** into a SQLite database on disk
+        (`Documentation/PRIVACY.md` §5.1). Worried about that is not a bug report gone
+        wrong — it is the single most on-topic issue you can file here.
+
+        The paradox we are trying to solve in this form: reporting a privacy concern
+        about this particular app is unusually easy to turn into a privacy incident.
+        Please read the next block before you type anything.
+
+  - type: markdown
+    attributes:
+      value: |
+        > [!WARNING]
+        > ## Never attach, paste or link the raw database.
+        >
+        > `observatory.sqlite` (plus its `-wal` / `-shm` sidecars) contains **your live
+        > process list, your absolute paths, and your argv** — argv is where tokens,
+        > file names and repo URLs actually live. Attaching it to a public issue is the
+        > exact opposite of what this project is built for. A database file is also
+        > never needed to diagnose anything described in this form.
+        >
+        > What to share instead:
+        >
+        > | Instead of contents, share | Command |
+        > | --- | --- |
+        > | Table layout | `sqlite3 -readonly observatory.sqlite ".schema file_changes"` |
+        > | How much, not what | `sqlite3 -readonly observatory.sqlite "select count(*) from diffs;"` |
+        > | That a column is non-empty | `select count(*) from commands where arguments_json != '[]';` |
+        >
+        > Use `-readonly`, and note that the WAL sidecar holds recent rows too —
+        > `.schema` and `count(*)` never reveal them either way.
+        >
+        > Paste **schema and row counts, never row values.** If a value is genuinely
+        > load-bearing, fabricate a fake one that shows the same shape and say it is fake.
+
+  - type: dropdown
+    id: concern
+    attributes:
+      label: What are you worried about?
+      description: >-
+        Pick every category that applies. Each one below maps to code in this repo —
+        they are what the app actually does, not a generic checklist.
+      multiple: true
+      options:
+        - "Process executable paths / cwd / argv are recorded (LibprocProcessInspector: proc_pidpath, PROC_PIDVNODEPATHINFO, sysctl KERN_PROCARGS2; stored as commands.executable / working_directory / arguments_json)"
+        - "Changed-file paths are recorded (file_changes.path, diffs.path, file_snapshots.path — full absolute paths, so your username and project layout are in them)"
+        - "Plaintext file content is stored as diff lines (diffs.lines_json is TEXT NOT NULL: real content fragments of changed text files, not just metadata)"
+        - "Content hashes of files are stored (file_snapshots.content_hash — cannot be reversed, but proves whether content changed)"
+        - "The database sits on disk unencrypted (no encryption anywhere in the store layer: grepping the store sources for encrypt/cipher returns nothing, and PRIVACY.md §7 lists static encryption as not implemented)"
+        - "Exports leak more than the redactor masks (ExportRedactor masks 11 credential shapes only — paths, usernames, project names and argv file names are not masked and necessarily travel with the report)"
+        - "Unified-log (OSLog) residue outside the app's control (subsystem com.aix.aiobservatory; retention is macOS's decision, and PRIVACY.md §3 says the app cannot promise zero residue)"
+        - "Retention / deletion: no in-app delete-my-data action (store.deleteAllData() exists but nothing in AIObservatoryUI or AIObservatoryApp calls it; pruning runs DELETE without VACUUM, so the file is not shrunk or rewritten)"
+        - "Agent hook ingestion: the app parses agent-hooks/*.jsonl written by other people's tools and promotes those rows over sampled ones (AgentHookEvent carries command / arguments / workingDirectory)"
+        - "Scope of what gets watched (PathFilter defaults .build/, node_modules/, DerivedData/, *.tmp, .git/objects are noise filters, not sensitive-directory exclusions; ~/.ssh and ~/.aws are escalation labels in PathHeuristics, not ignore rules)"
+        - "Risk explanations copy sensitive paths into human-readable text (DestructiveCommandRules emits a reason string containing the matched path, and it is stored)"
+        - "Something else (describe below)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: What exactly worries you, and where did you see it?
+      description: >-
+        Name the column, file or doc section if you can (e.g. "`diffs.lines_json` on a
+        machine where agents edit dotfiles"). Redact your own username and any real
+        path — `~/.ssh/...` and `<redacted-project>/config.yaml` are fine; a full
+        absolute path from your home directory is not necessary to understand a report.
+      placeholder: |
+        I am worried that …
+        I found it at … (file / column / Documentation section)
+        On my machine this matters because … (redacted)
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ## Verified **not** collected — please don't report these as leaks
+
+        Checked against the tree, so you can skip them (and if any of these *does* start
+        happening, that is a serious bug worth its own issue):
+
+        - **Environment variables are not read.** `AgentDetectionPipeline` passes an empty
+          environment into the detection context, and `LibprocProcessInspector`'s
+          `KERN_PROCARGS2` loop is bounded by `argc`, so the `envp` region is never walked
+          (`PRIVACY.md` §5.2, §7). There is no env allow-list because there is nothing to filter.
+        - **Nothing leaves the machine.** `PRIVACY.md` §2.1's network-API grep over `Sources/`
+          returns 0 hits, and no `import Network` / `CFNetwork` exists.
+        - **No telemetry, crash reporting, update check, license server or account.**
+        - **File mtimes / ctimes are not stored** — `FileSnapshotter` reads only size and type,
+          and the schema's timestamps are this tool's own `captured_at`.
+        - **Diff capture is bounded, not unlimited**: past 20,000 lines on either side, or an
+          edit distance over 4,000, `MyersDiffEngine` degrades to a whole-block summary and
+          sets `is_truncated` instead of storing every line.
+
+        Two things that *are* true and often mistaken for the above: the app **does** read
+        NIC byte counters and GPU utilization (`getifaddrs` / `IOKit`, whole-machine
+        aggregates only, no per-process attribution, no sockets opened), and it **does**
+        write its observations to disk.
+
+  - type: markdown
+    attributes:
+      value: |
+        ## Where your data currently sits (real resolution rules)
+
+        `Sources/AIObservatoryApp/DataLocation.swift` resolves the directory in this order:
+
+        1. `$AIOBSERVATORY_DATA_DIR` — if set and non-empty, it wins.
+        2. Packaged run (bundle id `com.aix.aiobservatory` **and** executable inside a `*.app`):
+           `~/Library/Application Support/com.aix.aiobservatory/`
+        3. Dev run (bare SwiftPM executable): `observatory-data/` at the repo root, found by
+           walking up to 6 levels for `Package.swift`; falls back to
+           `<system temp>/AIObservatoryDev/` if no repo is found.
+        4. Directory cannot be created → empty string → **in-memory database, nothing on disk**
+           (it does not crash and does not silently write somewhere else).
+
+        Inside that directory: `observatory.sqlite` + `-wal` / `-shm`, plus the `agent-hooks/`
+        subdirectory the app reads.
+
+        There is **no in-app "delete my data" button yet.** Until there is, clearing it is a
+        manual `rm` — see `Documentation/PRIVACY.md` §3, and quit the app first, because
+        deleting the database while it runs leaves the WAL sidecar inconsistent with the
+        main file.
+
+  - type: dropdown
+    id: data-location
+    attributes:
+      label: Which rule resolved on your machine?
+      description: >-
+        This tells us which code path wrote your file; it does not require your path.
+        Run `ls -la` on the directory, or check Settings > Storage in the app.
+      options:
+        - "AIOBSERVATORY_DATA_DIR override (I set it explicitly)"
+        - "Packaged .app -> ~/Library/Application Support/com.aix.aiobservatory/"
+        - "Dev / bare executable -> observatory-data/ at the repo root"
+        - "Dev fallback -> AIObservatoryDev under the system temp directory"
+        - "In-memory (directory creation failed, nothing on disk)"
+        - "Unknown / I don't know how to check"
+    validations:
+      required: true
+
+  - type: input
+    id: data-path
+    attributes:
+      label: Optional — the directory, with your username removed
+      description: >-
+        Only if it genuinely matters for your report. Replace your account name, e.g.
+        `/Users/<you>/Library/Application Support/com.aix.aiobservatory` or
+        `~/dev/<project>/observatory-data`. A path containing your real account name
+        tells us nothing the dropdown above did not already tell us.
+      placeholder: /Users/<you>/Library/Application Support/com.aix.aiobservatory
+
+  - type: markdown
+    attributes:
+      value: |
+        ## What we will NOT ask you for
+
+        There is no field in this form for any of the following, and a maintainer should
+        not request them either. If you paste them anyway, assume they are public forever:
+
+        - **The database file itself**, or any attachment containing rows — see the warning
+          at the top. That is also why this form deliberately has **no file-upload field**.
+        - **argv, command lines or `arguments_json` values as-is.** They are the highest
+          sensitivity column in the schema precisely because arguments carry paths, repo
+          URLs and inline secrets. Describe the shape, or invent a fake value.
+        - **Any string containing a real token.** `ExportRedactor` masks 11 *credential
+          shapes* in exports (`sk-…`, `ghp_…`, `AKIA…`, Slack tokens, private-key blocks,
+          `Authorization:`/`Bearer` values, `password=`/`token=`/`api_key=` assignments,
+          `.env`-style values, Stripe secrets) into `‹redacted:kind›`, keys preserved.
+          It is **pattern matching at export time only** — it does not protect anything you
+          type into a GitHub issue, and it does not mask paths or usernames.
+        - **The contents of `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config`, `~/Library/Keychains`**
+          or any keychain export. These appear in this repo only as *prefix strings* used to
+          escalate risk levels; we never need the files.
+        - **Diff lines / `lines_json` from a private repository.** Say that a diff exists and
+          how large it is; do not paste it.
+        - **Screenshots of the timeline or files view** that show real paths — those views
+          render absolute paths. A description beats a screenshot here.
+
+        This repository has **no public contact email and no disclosure SLA**, and
+        `Documentation/SECURITY.md` §7 deliberately declines to publish one while the repo
+        is not public. We are not going to pretend otherwise in this form.
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to see the behaviour without using our data
+      description: >-
+        Best evidence is a **recipe against a throwaway database**, not your real one.
+        `AIOBSERVATORY_DATA_DIR="$PWD/tmp/verify" open dist/AIObservatory.app` gives you a
+        fresh directory you can inspect and then delete, and
+        `Tools/AgentFixture/fixture-agent.sh 30` starts a fake agent so rows appear.
+        Keep the data directory **inside the repo tree** so nothing escapes into your
+        real `~/Library`.
+      placeholder: |
+        1. AIOBSERVATORY_DATA_DIR="$PWD/tmp/verify" open dist/AIObservatory.app
+        2. Tools/AgentFixture/fixture-agent.sh 30
+        3. sqlite3 -readonly tmp/verify/observatory.sqlite ".schema <table>"
+        4. Observed: …
+        5. rm -rf tmp/verify
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: How bad is it, from your side?
+      description: >-
+        Judged by what could now be read, not by how alarming it sounds. Note that
+        `SECURITY.md` §4 already states the blast radius plainly: no App Sandbox, no
+        encryption, no tamper-evident log — the design limits exposure by not networking,
+        so anything that breaks "not networking" is automatically the top row.
+      options:
+        - "Data I considered private reached, or could reach, a party I did not choose (including via an export I made)"
+        - "A documented privacy guarantee in PRIVACY.md / SECURITY.md is not what the code does"
+        - "Recorded-by-default material is broader or stickier than a reasonable user would expect"
+        - "Missing control: I cannot prevent or undo a collection that is already possible"
+        - "Documentation is accurate but I disagree with the trade-off"
+        - "Unclear — help me work out which row this is"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: defaults-question
+    attributes:
+      label: Do you want the project to change its defaults?
+      description: >-
+        Distinguishes "the docs and the code disagree" from "I accept the design but want
+        to opt out". Several knobs exist in `ObservatorySettings` and are editable in
+        Settings > Storage, but they are **not persisted** (no `UserDefaults`
+        implementation, so they reset on relaunch — `PRIVACY.md` §7), and there is
+        **no switch at all** that stops plaintext diff capture.
+      options:
+        - "No — behaviour is correct and documented, I only wanted it recorded"
+        - "Yes — make the collection opt-in rather than opt-out"
+        - "Yes — add a way to turn it off (e.g. disable diff content, or a shorter default retention)"
+        - "Yes — add an in-app delete-my-data / export-my-data action"
+        - "Yes — persist the settings that already exist so opting out survives a relaunch"
+        - "I don't know, I just want to ask about it"
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-change
+    attributes:
+      label: Optional — what change would resolve this for you?
+      description: >-
+        One sentence is enough. Note that "stop recording paths" and "stop recording diff
+        text" would remove the product's core capability, so tell us the boundary you would
+        actually accept (per-directory exclusion? per-suffix? a size cap? off by default?).
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before you submit
+      description: These are load-bearing, not a formality.
+      options:
+        - label: I read `Documentation/PRIVACY.md` — at least §1 (where data lands), §5 (what is collected and what remains), §7 (what is not implemented) and §8 (what the project refuses to claim).
+          required: true
+        - label: I read `AGENTS.md` §7 — all data stays local, no network upload, plaintext file content is limited to the minimum the diff needs, and credentials / environment variables are not collection targets.
+          required: true
+        - label: I have **not** attached or pasted `observatory.sqlite`, its `-wal` / `-shm` sidecars, or any row contents. I used `.schema` and `count(*)` instead.
+          required: true
+        - label: I removed my account name, real project paths, and any real token or secret from everything above, including any command output.
+          required: true
+        - label: I understand this repository has **NO public contact email and NO git remote yet**, so this issue tracker is the only channel — anything I file here is public from the moment I click submit, with no private way to escalate first.
+          required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ## What happens next, honestly
+
+        - There is no security email, no embargo period and no response-time promise in
+          this project. `Documentation/SECURITY.md` §7 says so explicitly rather than
+          inventing a channel it does not have.
+        - `git remote -v` is currently empty: the repository is not published anywhere, so
+          this template is pre-arranged for the moment it is. Until then an issue here is
+          not reachable by outsiders — which also means there is no private reporting path.
+        - If your report is that a claim in `PRIVACY.md` / `SECURITY.md` is stronger than
+          the code, expect the **document to be corrected**, not the feature removed. That
+          is how previous such findings were handled; both docs carry dated correction notes
+          proving it.
+        - Do not expect a moderation team or a disclosure programme; expect whoever is
+          holding the merge ticket at the time to read it.

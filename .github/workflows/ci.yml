@@ -1,0 +1,398 @@
+# ============================================================================
+# AiX（AI Agent 活动审计台）— CI
+#
+# Owner: WS-Packaging/D（.github/ 是本工作流的新增目录）
+# 范围：构建 / 测试 / 打包 / 隐私不变量检查。CI **从不启动 App**（见下方 sandbox 与
+#       AIOBSERVATORY_DATA_DIR 两节的理由）。
+#
+# ────────────────────────────────────────────────────────────────────────────
+# 1) 为什么这里**没有** `--disable-sandbox`（这是有意的，不是遗漏）
+#
+#    本地开发必须写 `xcrun swift build --disable-sandbox`：本项目的执行环境本身
+#    已经跑在 sandbox 里，SwiftPM 再嵌套一层 `sandbox-exec` 会直接报
+#    `sandbox_apply: Operation not permitted`。
+#    （出处：AiX-Vault/05-失忆防护/必读.md 第 6 节；AGENTS.md 第 6 节是性能章节，
+#      该 workaround 实际记录在必读.md 第 6 节 —— Documentation/README.md 与 INSTALL.md
+#      都按这个口径写。）
+#
+#    GitHub 托管 runner 上**没有外层 sandbox**，所以：
+#      · 加 `--disable-sandbox` 是多余的；
+#      · 更糟的是它会永久掩盖「SwiftPM 沙箱兼容性回归」这一类真实问题。
+#    因此本文件里的构建/测试命令一律不带该 flag，并由 privacy-guard 作业做自检
+#    （见该作业最后一步）。
+#
+#    打包唯一入口是 `Packaging/make-app.sh`：它把这个 flag 参数化为
+#    `AIX_SPM_SANDBOX_FLAG`（Packaging/make-app.sh:141-152 —— 未设置时保留本地默认带
+#    flag 的行为），CI 上显式传空串即还原 SwiftPM 默认行为（见 package 作业）。
+#    CI 不再自行内联组装 bundle：两份组装逻辑并存 = 早晚 CI 验的不是出货的那份。
+#
+# 2) 工具链要求
+#    Package.swift:1            swift-tools-version 6.2  → 需要 Swift 6.2+ 工具链
+#    Package.swift:14           .macOS("26.0")           → 需要 macOS 26 SDK，runner 必须是 macos-26
+#    Package.swift:138          swiftLanguageModes: [.v6] → 严格并发；产物是 10 个 target
+#
+# 3) runner 标签与镜像事实（核对时间 2026-09-20，均为只读查询，未下载任何东西）
+#    https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+#      → macOS 可用标签包含 macos-26、macos-26-intel、macos-15、macos-14、macos-latest
+#    https://raw.githubusercontent.com/actions/runner-images/main/images/macos/macos-26-arm64-Readme.md
+#      → macos-26 = arm64、系统 macOS 26.6.2、**默认 Xcode 26.6**，
+#        已安装 Xcode_26.6 / 26.5 / 26.4.1 / 26.3 / 26.2 / 26.1.1 / 26.0.1
+#      因此本文件用 `runs-on: macos-26`（arm64，与产品目标架构一致）并用
+#      DEVELOPER_DIR 切换 Xcode，不调用需要 sudo 的 xcode-select，也不引入第三方 action。
+#    **未验证**：Xcode 版本 ↔ Swift 版本的官方映射表我没有核对。按惯例 Xcode 26.2 携带
+#    Swift 6.2，因此矩阵下界取 26.2；若某个入口在 `swift --version` 步报错，请上调下界。
+#
+# 4) 历史 KNOWN ISSUE —— 4 个 WS-Files 套件的 scratch 写死个人路径：**已修，现全量门禁**
+#    main f95ed68 新增 Sources/AIObservatoryTestSupport/Scratch.swift
+#    （`Scratch.root` / `Scratch.directory(_:)` / `Scratch.path(...)`），
+#    默认根 = **当前检出自带的 `.scratch-tests/`**（由 `#filePath` 推导，工作树与 runner 各算各的），
+#    可用 `AIOBSERVATORY_TEST_SCRATCH` 覆盖。取代了 13 处硬编（不止最初上报的 4 处）。
+#    ⇒ build-test 里的 `--skip` / `--filter` 两步拆分与 `continue-on-error` 已删除；
+#      privacy-guard 的个人路径步骤也从 non-gating warning 升级为门禁（判据 G1–G5 见该步）。
+#    ⚠️ 别"顺手改用 FileManager.temporaryDirectory"：macOS 的 $TMPDIR 是 /var/folders/…，
+#      而 `ExportPathPolicy.forbiddenPrefixes` 含 `/var` 与 `/private` ——
+#      导出层自己的隐私策略会拒掉临时目录当根（总控实测结论）。
+#      CI 上设 `AIOBSERVATORY_TEST_SCRATCH=$RUNNER_TEMP/scratch-tests`
+#      （macOS runner 的 $RUNNER_TEMP 在 /Users/runner/… 下，不撞禁写前缀，也不脏化仓库）。
+#    ⚠️ 仍**未验证**：以上门禁只在本机核过真值（G1=G2=G3=G4=G5=0，2026-09-21 复测；
+#      G4 上限从 52 收到 0 的理由写在该步注释里），
+#      托管 runner 上 Scratch 由 `#filePath` 推导出的根是否真的可写，要等第一次 CI 跑。
+#
+# 5) actions 版本：取自各 action 仓库 README 的示例（核对时间 2026-09-20）
+#      actions/checkout@v7          https://github.com/actions/checkout
+#      actions/upload-artifact@v7   https://github.com/actions/upload-artifact
+#        （该 README 列出的 input 为 name / path / if-no-files-found / retention-days /
+#          compression-level / overwrite / include-hidden-files / archive；
+#          **没有**列出 exclude-paths，所以本文件不依赖它，改为「先断言产物干净、再上传」。）
+#    供应链加固建议：把 tag 换成 commit SHA 固定（例：
+#      gh api repos/actions/checkout/git/ref/tags/v7 ），具体 SHA 我没有取，未验证。
+# ============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main, "ws/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 最小权限：CI 不需要写仓库元数据，也不需要任何 secret。
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # DataLocation.swift:24 是**全仓库唯一**读取该变量的地方（App target）。
+  # 它不影响 `swift test`（测试用 ObservatorySettings(storeDirectory:) 直接注入，
+  # 空串按 ObservatoryEngine.swift:122-125 退化为内存库），
+  # 但如果将来某一步真的把 App 跑起来，这一行能保证数据不落进
+  # ~/Library/Application Support/com.aix.aiobservatory/（ADR-0003 规则 2）
+  # 也不落进仓库（规则 3），而是落进 runner 用完即弃的临时目录。
+  AIOBSERVATORY_DATA_DIR: ${{ runner.temp }}/aix-data
+  # 零警告门禁：AGENTS.md 第 4 节 DoD 要求「零错误、零警告」，但我没有跑过构建，
+  # **无法确认当前主线是否零警告**，所以默认只标注不失败。
+  # 主线确认干净后把它改成 "true"。
+  STRICT_WARNINGS: "false"
+
+jobs:
+  # --------------------------------------------------------------------------
+  # 隐私不变量：把 Documentation/PRIVACY.md 第 2 节与 AGENTS.md 第 7 节的承诺
+  # 变成每次 push 都跑的可执行检查。不需要 Xcode，秒级完成。
+  # --------------------------------------------------------------------------
+  privacy-guard:
+    name: 隐私与仓库卫生不变量
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 源码里不得出现网络栈（PRIVACY.md 第 2.1 节的可执行版）
+        run: |
+          set -euo pipefail
+          # 命中集合与 Documentation/PRIVACY.md 第 2.1 节列出的清单一致。
+          # 本机复核结果：0 命中（2026-09-20）。
+          if hits=$(grep -rnE 'URLSession|NSURLConnection|NWConnection|NWListener|NWParameters|socket\(|CFNetwork|getaddrinfo|MCSession|NetService|import Network' Sources/); then
+            echo "::error::Sources/ 出现网络调用点，零上传声明不再成立，必须同步修改 PRIVACY.md 与本检查"
+            printf '%s\n' "$hits"
+            exit 1
+          fi
+          echo "OK：网络调用点命中数 0"
+
+      - name: 无外部 SPM 依赖（CI 联网面必须只有 checkout）
+        run: |
+          set -euo pipefail
+          if grep -nE '\.package\(url:' Package.swift; then
+            echo "::error::Package.swift 新增外部依赖：需要重新做许可与隐私评估，且 CI 需要联网取依赖"
+            exit 1
+          fi
+          echo "OK：Package.swift 无外部依赖（与 Package.swift:11-139 一致，全部为仓库内 target）"
+
+      - name: 版本控制里不得有观测数据或签名材料
+        run: |
+          set -euo pipefail
+          if git ls-files | grep -Ei '\.(sqlite|sqlite-wal|sqlite-shm|p12|provisionprofile|mobileprovision|p8|cer|key)$|observatory-data/|\.env'; then
+            echo "::error::仓库里出现了数据文件 / 签名材料 / .env（见 ADR-0003 与 AGENTS.md 第 7 节）"
+            exit 1
+          fi
+          echo "OK：无观测数据、无签名私钥、无 .env 被跟踪"
+
+      - name: 本工作流自身不得使用 SwiftPM 的沙箱绕过 flag
+        run: |
+          set -euo pipefail
+          # 只看非注释行：注释里提到这个词是允许的（文件头第 1 节就在解释它）。
+          # 写法 `[d]isable` 是为了让这一行自身不被自己的模式命中。
+          if grep -vE '^[[:space:]]*#' .github/workflows/ci.yml | grep -nE -- '[d]isable.sandbox'; then
+            echo "::error::CI 不得绕过 SwiftPM sandbox（理由见本文件头第 1 节）"
+            exit 1
+          fi
+          echo "OK：CI 未绕过 SwiftPM sandbox"
+
+      - name: 个人绝对路径门禁（Scratch 夹具落地后，硬编可写根 = 错误）
+        # 2026-09-20 起改为**门禁**。四条判据当天的真值都写在 echo 里，
+        # 任何一条变红都必须是回归，不是噪声。
+        run: |
+          set -uo pipefail
+          fail=0
+          strip_comments() { grep -vE ':[[:space:]]*(//|///|\*|/\*)'; }
+
+          # G1 生产代码里不允许出现任何个人路径字面量（今天真值：0）。
+          n1=$(grep -rn "/[U]sers/one" Sources/ 2>/dev/null | strip_comments | wc -l | tr -d ' ')
+          echo "G1 Sources/ 非注释个人路径字面量: $n1（必须为 0）"
+          if [ "$n1" != "0" ]; then
+            grep -rn "/[U]sers/one" Sources/ | strip_comments
+            echo "::error::Sources/ 出现写死的绝对个人路径（/Users/<account>/…）：生产代码不得依赖某一个人的检出目录"
+            fail=1
+          fi
+
+          # G2 本工作树的 scratch 根只允许出现在 Scratch.swift 自己的实现里（今天真值：0）。
+          n2=$(grep -rn '\.worktrees/[.]scratch' Sources Tests --exclude=Scratch.swift 2>/dev/null | wc -l | tr -d ' ')
+          echo "G2 Scratch.swift 之外写死 .worktrees/.scratch: $n2（必须为 0）"
+          if [ "$n2" != "0" ]; then
+            grep -rn '\.worktrees/[.]scratch' Sources Tests --exclude=Scratch.swift
+            echo "::error::改用 Scratch.root / Scratch.path(...)（Sources/AIObservatoryTestSupport/Scratch.swift）"
+            fail=1
+          fi
+
+          # G3 不得对字面量个人路径落盘（这是 FINDING-1 的真实故障类；今天真值：0）。
+          n3=$(grep -rn '"/[U]sers/one' Sources Tests 2>/dev/null | grep -c 'createDirectory' || true)
+          echo "G3 以绝对个人路径字面量为目标的 createDirectory: $n3（必须为 0）"
+          if [ "${n3:-0}" != "0" ]; then
+            grep -rn '"/[U]sers/one' Sources Tests | grep 'createDirectory'
+            echo "::error::测试会在某个人的目录里建真目录，托管 runner 上必然失败"
+            fail=1
+          fi
+
+          # G4 棘轮：2026-09-20 当时剩 52 处**合成数据**（stub 的 cwd / 项目路径 / 越界导出目标），
+          # 于是记成 ceiling=52「只准降不准升」。
+          # ⚠️ 2026-09-21 更正：那 52 处后来全被 `FixturePaths` 迁移掉了（今天真值 0），
+          # 而 ceiling 还停在 52 ⇒ 这条棘轮**当场变成假门禁**：`ws/uiclose` 新交的
+          # `ProjectPathLabelTests.swift` 里 12 处真实 `/Users/<用户名>/…` 一路绿过 G1–G4，
+          # 是 `make-public-release.sh` 自检② 才抓出来的（它数一切命中，**包括注释**）。
+          # ⇒ 棘轮的存量清零之后必须把上限跟着降下来，否则"只准降不准升"守的是一个不存在的额度。
+          ceiling=0
+          n4=$(grep -rn "/[U]sers/one" Tests/ 2>/dev/null | strip_comments | wc -l | tr -d ' ')
+          echo "G4 Tests/ 非注释个人路径字面量: $n4（棘轮上限 $ceiling，只准降不准升）"
+          if [ "$n4" -gt "$ceiling" ]; then
+            echo "::error::个人路径字面量比基线更多（$n4 > $ceiling）。合成数据请用不含真实用户名的路径（如 /Users/tester/…），落盘一律走 Scratch.path(...)。"
+            fail=1
+          fi
+
+          # G5（2026-09-21 补）：与 G1–G4 互补的那半边——**含注释**、含 Sources/Tests 之外的一切
+          # 被跟踪文件（文档、脚本、夹具）。G1/G4 都 `strip_comments`，而发布自检② 不去注释，
+          # 两条口径不重合的差额就是能溜过去的东西（ProjectCard 那两行正是纯注释命中）。
+          # 用 git grep 只查被跟踪文件：天然排除 tmp/ 与 .build/，也不撞 worktree 的 `.git` 指针文件。
+          n5=$(git grep -I -c -- "/[U]sers/one" 2>/dev/null | wc -l | tr -d ' ')
+          echo "G5 被跟踪文件里含注释的个人路径（按文件数）: $n5（必须为 0）"
+          if [ "$n5" != "0" ]; then
+            git grep -I -n -- "/[U]sers/one"
+            echo "::error::本机目录布局被写进公开产物（注释也算）。改法见 Sources/AIObservatoryTestSupport/FixturePaths.swift 头注释。"
+            fail=1
+          fi
+
+          if [ "$fail" = 0 ]; then
+            echo "OK：生产代码零硬编路径、无写死的 scratch 根与落盘目标，合成路径未超过基线 $ceiling"
+          else
+            exit 1
+          fi
+
+  # --------------------------------------------------------------------------
+  # 构建 + 测试矩阵：Xcode 多入口，全部不带 --disable-sandbox。
+  # --------------------------------------------------------------------------
+  build-test:
+    name: 构建与测试（Xcode ${{ matrix.xcode }}）
+    needs: privacy-guard
+    runs-on: macos-26
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-26 默认即 26.6；保留 26.2 作为 tools-version 6.2 的下界哨兵。
+        # 想省钱就只留 ["26.6"]。
+        xcode: ["26.6", "26.4.1", "26.2"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 选择 Xcode（用 DEVELOPER_DIR，避免 sudo xcode-select）
+        run: echo "DEVELOPER_DIR=/Applications/Xcode_${XCODE}.app/Contents/Developer" >> "$GITHUB_ENV"
+        env:
+          XCODE: ${{ matrix.xcode }}
+
+      - name: 工具链自检
+        run: |
+          set -euo pipefail
+          echo "DEVELOPER_DIR=${DEVELOPER_DIR:-（镜像默认 Xcode）}"
+          xcodebuild -version || true
+          swift --version
+          echo "macOS SDK: $(xcrun --sdk macosx --show-sdk-version)"
+          # 若这里的 Swift 版本 < 6.2，Package.swift:1 的 tools-version 会在下一步报错，
+          # 说明该 Xcode 入口不该留在矩阵里（矩阵下界未经验证，见文件头第 3 节）。
+
+      - name: Debug 构建（严格并发）
+        run: |
+          set -euo pipefail
+          xcrun swift build 2>&1 | tee "$RUNNER_TEMP/build-debug.log"
+
+      - name: 警告门禁（由 STRICT_WARNINGS 控制，默认只标注）
+        run: |
+          set -uo pipefail
+          warns=$(grep -E 'warning:' "$RUNNER_TEMP/build-debug.log" | sort -u || true)
+          if [ -n "$warns" ]; then
+            printf '%s\n' "$warns"
+            echo "警告条数: $(printf '%s\n' "$warns" | wc -l | tr -d ' ')"
+            if [ "$STRICT_WARNINGS" = "true" ]; then
+              echo "::error::AGENTS.md 第 4 节要求零警告"
+              exit 1
+            fi
+            echo "::warning::构建有警告，未门禁（STRICT_WARNINGS=false）"
+          else
+            echo "OK：零警告"
+          fi
+
+      - name: Release 构建（App 产物，对应 Package.swift:26）
+        run: xcrun swift build -c release --product AIObservatory
+
+      # 历史上这一步要把 4 个 WS-Files 套件摘出门禁（文件头第 4 节），
+      # 因为它们的 scratch 根写死成本机绝对路径。main f95ed68 引入
+      # Sources/AIObservatoryTestSupport/Scratch.swift 之后，那 13 处已改掉 ⇒ 全量门禁。
+      #
+      # AIOBSERVATORY_TEST_SCRATCH 指到 runner temp 有两个理由：
+      #   1) 不落进仓库，免得撞下一步的 `git status --porcelain` 污染检查
+      #      （Scratch 的默认根是检出自带的 .scratch-tests/，在 CI 上会变脏）；
+      #   2) 不用 $TMPDIR：macOS 的 $TMPDIR 是 /var/folders/…，而
+      #      ExportPathPolicy.forbiddenPrefixes 含 /var 与 /private，
+      #      导出层自己的隐私策略会把那种根拒掉 ⇒ 这是总控实测结论，别"顺手改成临时目录"。
+      - name: 单元测试（全量，门禁）
+        env:
+          AIOBSERVATORY_TEST_SCRATCH: ${{ runner.temp }}/scratch-tests
+        run: |
+          set -euo pipefail
+          xcrun swift test 2>&1 | tee "$RUNNER_TEMP/test.log"
+
+      - name: quiet 设计棘轮（只拦新增违规，存量记在基线里）
+        # 为什么进 CI：`Scripts/gate-quiet-design.sh` 以前没有任何 job 引用它——没人跑的门禁
+        # 等于没有门禁，ADR-0008 的禁令正是这样一路烂回去的。直接跑它会在 main 上就红
+        # （存量 6 个自绘轴文件），所以走棘轮：变多红、变少提示收紧、持平过。
+        run: |
+          set -euo pipefail
+          bash Scripts/ratchet-quiet-design.sh
+
+      - name: 确认测试没有污染仓库或家目录
+        run: |
+          set -euo pipefail
+          test ! -e observatory-data || { echo "::error::测试在仓库内落了数据目录（ADR-0003 规则 3 泄漏）"; exit 1; }
+          test ! -e .scratch-tests || { echo "::error::测试把 scratch 落在仓库内：本 job 应设 AIOBSERVATORY_TEST_SCRATCH=\$RUNNER_TEMP/scratch-tests"; exit 1; }
+          test -d "$RUNNER_TEMP/scratch-tests" && echo "scratch 落在仓库外：$RUNNER_TEMP/scratch-tests" || echo "（本轮没有任何用例需要 scratch）"
+          case "$RUNNER_TEMP/scratch-tests" in
+            "$GITHUB_WORKSPACE"/*) echo "::error::scratch 覆盖到了仓库内"; exit 1 ;;
+          esac
+          test ! -e "$HOME/Library/Application Support/com.aix.aiobservatory" \
+            || { echo "::error::CI 上创建了正式安装版数据目录，说明有步骤以打包身份启动了 App（ADR-0003 规则 2）"; exit 1; }
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --porcelain
+            echo "::error::构建/测试改动了工作树文件，产物应只落在 .build/ 与 dist/"
+            exit 1
+          fi
+          echo "OK：仓库与家目录未被写入"
+
+  # --------------------------------------------------------------------------
+  # 打包与产物：产物里只允许有可执行文件与 bundle 元数据。
+  # --------------------------------------------------------------------------
+  package:
+    name: 组装 .app 并上传产物
+    needs: build-test
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Release 构建
+        run: xcrun swift build -c release --product AIObservatory
+
+      - name: 组装 bundle（唯一入口 Packaging/make-app.sh，CI 形态不带沙箱绕过 flag）
+        run: |
+          set -euo pipefail
+          # 不再在 workflow 里内联组装第二份 bundle 逻辑：那样 CI 验出来的包
+          # 和本地出货的包不是同一个东西（信息 plist 键、PkgInfo、图标条件、
+          # entitlements 嵌入方式都会各走一套）。
+          # 传空串 = 让脚本按 CI 形态构建（Packaging/make-app.sh:141-152）。
+          test -x Packaging/make-app.sh || { echo "::error::打包入口 Packaging/make-app.sh 缺失"; exit 1; }
+          AIX_SPM_SANDBOX_FLAG="" ./Packaging/make-app.sh
+
+      - name: ad-hoc 签名 + 校验
+        run: |
+          set -euo pipefail
+          APP="$GITHUB_WORKSPACE/dist/AIObservatory.app"
+          test -d "$APP" || { echo "::error::dist/AIObservatory.app 不存在"; exit 1; }
+          # 入口脚本已经签过一次；这里按同一套默认（ad-hoc + BASE entitlements）重签
+          # 一次并强制校验，使「签名成功」成为 CI 门禁而不是脚本顺手做的事。
+          # 故意不用 --deep：单可执行文件、无嵌套代码，且 --deep 已被 Apple 弃用于签名
+          # （理由见 Documentation/SECURITY.md 第 3 节与 Packaging/make-app.sh 不变量 #6）。
+          # 这里不用数组传参：runner 的 /bin/bash 是 3.2，`set -u` 下展开空数组会报 unbound variable。
+          if [ -f Packaging/Observatory-App.entitlements ]; then
+            codesign --force --sign - --entitlements Packaging/Observatory-App.entitlements "$APP"
+          else
+            echo "::warning::Packaging/Observatory-App.entitlements 不在检出的修订里，按无 entitlement 签名"
+            codesign --force --sign - "$APP"
+          fi
+          # 显式校验 = 门禁：绝不允许「签名失败却仍打印成功」这种写法回来
+          # （吞 stderr + `|| echo` + --deep 三处叠加时会发生，见 make-app.sh 不变量 #7）。
+          codesign --verify --strict --verbose=2 "$APP"
+
+      - name: Gatekeeper 评估（ad-hoc 包预期被拒，不门禁）
+        continue-on-error: true
+        run: spctl -a -vv "$GITHUB_WORKSPACE/dist/AIObservatory.app"
+
+      - name: 产物不得包含任何观测数据
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          if find dist \( -name '*.sqlite' -o -name '*.sqlite-wal' -o -name '*.sqlite-shm' -o -name 'observatory-data' \) -print -quit | grep -q .; then
+            echo "::error::dist/ 里含观测数据库，禁止上传（AGENTS.md 第 7 节 / ADR-0003）"
+            exit 1
+          fi
+          test ! -e "$HOME/Library/Application Support/com.aix.aiobservatory" \
+            || { echo "::error::CI 上出现了正式安装版数据目录"; exit 1; }
+          du -sh dist || true
+          echo "OK：产物只含构建输出"
+
+      - name: 上传 .app
+        uses: actions/upload-artifact@v7
+        with:
+          name: AIObservatory-macos26-arm64-xcode${{ matrix.xcode || '26.6' }}
+          path: dist/AIObservatory.app
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 上传构建日志（不含被审计数据；日志本身只有编译诊断）
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-${{ matrix.xcode || 'package' }}
+          path: ${{ runner.temp }}/*.log
+          if-no-files-found: ignore
+          retention-days: 7

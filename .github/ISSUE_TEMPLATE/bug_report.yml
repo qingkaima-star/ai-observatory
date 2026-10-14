@@ -1,0 +1,423 @@
+# ---------------------------------------------------------------------------
+# GitHub "Issue forms" template (type: markdown / textarea / input / dropdown /
+# checkboxes). This is NOT the legacy markdown-in-yaml issue template.
+#
+# Every repo-specific claim below is greppable in this tree. Provenance:
+#   macOS 26 floor ......... Package.swift:14  .macOS("26.0")
+#                            Packaging/Info.plist  LSMinimumSystemVersion -> 26.0
+#   packaging entry ........ Packaging/make-app.sh (self-described "唯一打包入口", i.e. the
+#                            only .app bundle assembly path); Scripts/make-app.sh does not
+#                            exist. Scripts/verify.sh = build+test only;
+#                            Scripts/make-public-release.sh = flattened public copy, no bundle
+#   data-dir rules ......... Sources/AIObservatoryApp/DataLocation.swift:23-64
+#   DB file name ........... Sources/AIObservatoryEngine/ObservatoryEngine.swift:141
+#   export redaction ....... Sources/AIObservatoryExport/ExportRedactor.swift
+#                            (RedactionKind :29-52, 11 kinds; rule table :149-196;
+#                             on by default: ExportRequest.swift:56)
+#   ES is a probe .......... Sources/AIObservatoryPlatform/AgentDetection/
+#                            EndpointSecurityMonitor.swift:17-18 and :45
+#                            Packaging/ENTITLEMENTS-NOTES.md §2.2 (exit 137 = SIGKILL)
+#   no upload path ......... Documentation/PRIVACY.md §2.1 (network API grep -> 0)
+#   guidelines ............. AGENTS.md (repo root)
+#
+# LABELS: `bug` and `triage` below are a request, not a claim. This repo has no
+# GitHub label configuration in version control and a fresh repository starts
+# with only GitHub's own defaults, so the repo owner must create any label that
+# is missing — an unknown label here is inert, not pre-provisioned.
+# ---------------------------------------------------------------------------
+name: Bug report
+description: >-
+  The app crashes, refuses to launch, misreports or misses an agent, loses
+  history, or blows the documented CPU/memory budget.
+title: "[bug] "
+labels:
+  - bug
+  - triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Stop. This app's data is your machine.
+
+        AiX is 100% local: `Sources/` contains no network
+        stack at all (`Documentation/PRIVACY.md` §2.1 — grepping `URLSession`,
+        `NWConnection`, `socket(`, `CFNetwork`, `import Network`, … returns `0`),
+        so there is **no "please upload my logs/diagnostic bundle to us" workflow**
+        in this project. Everything below asks you to hand-paste *text you have read*.
+
+        Your `observatory.sqlite` is not a normal app database. Its tables record the
+        process list, executable paths, working directories, argv, terminal commands,
+        file-change paths and diff snippets of the machine it ran on
+        (`Sources/AIObservatoryStore/StoreSchema.swift`, summarised in
+        `Documentation/PRIVACY.md` §5.1). Posting it to a public issue is a disclosure
+        event that no maintainer can undo for you.
+
+  - type: markdown
+    attributes:
+      value: |
+        ### What the exporter's redactor does — and does not — mask
+
+        `ExportRedactor` (`Sources/AIObservatoryExport/ExportRedactor.swift`) runs
+        before JSON / CSV / Markdown write-out and is **on by default**
+        (`ExportRequest.swift:56`, `redactionEnabled: Bool = true`).
+
+        * **It masks credential *shapes*, values only, key names preserved** — 11 kinds,
+          each replaced by `‹redacted:kind›`: `openai_key`, `github_token`,
+          `aws_access_key`, `slack_token`, `private_key`, `authorization_header`,
+          `bearer_token`, `password_assignment`, `token_assignment`, `env_file_value`,
+          `stripe_secret`. It is idempotent and overlapping matches resolve by
+          specificity, so `Authorization: Bearer sk-…` collapses to one placeholder.
+        * **It cannot mask absolute paths, usernames, project names, or the file names
+          inside command arguments** — those *are* the audit subject, so they travel with
+          every export by design (`Documentation/PRIVACY.md` §5.4,
+          `Documentation/SECURITY.md` threat T3: "partially mitigated").
+
+        Rule of thumb: an exported report is *already* personal. Redaction makes it
+        credential-free, not anonymous. Never attach `observatory.sqlite`,
+        `observatory.sqlite-wal` or `observatory.sqlite-shm` — in any format, "private"
+        or otherwise.
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: >-
+        Apple menu > About This Mac > macOS <version>, plus the build number shown
+        there. The product requires macOS 26.0 or newer
+        (`Package.swift:14` `.macOS("26.0")`; `Packaging/Info.plist`
+        `LSMinimumSystemVersion` `26.0`) — below that a packaged build is refused by
+        the system, which is a supported answer, not a bug.
+      placeholder: "e.g. macOS 26.6 (build 25F70)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: architecture
+    attributes:
+      label: Architecture
+      description: >-
+        `Packaging/make-app.sh` passes no `-arch` flag, so the built binary's
+        architecture is the build host's — it is not a universal binary
+        (`Documentation/INSTALL.md` §1). Check with `uname -m`.
+      options:
+        - arm64 (Apple Silicon)
+        - x86_64 (Intel)
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: run-mode
+    attributes:
+      label: How did you run it
+      description: >-
+        This matters more than in most apps: the database location and the signing
+        state differ per path (`Documentation/INSTALL.md` §0 and §6).
+      options:
+        - "From source, packaged: Packaging/make-app.sh -> dist/AIObservatory.app (the only .app bundle assembly entry point; there is no Scripts/make-app.sh in this repo)"
+        - "SwiftPM debug executable: .build/debug/AIObservatory (bare binary, not a bundle; e.g. via Scripts/verify.sh, which only builds and tests)"
+        - "CI artifact: AIObservatory-macos26-arm64-xcode<version> from the Actions package job"
+        - "A copy produced by Scripts/make-public-release.sh (flattened public repo copy — it does not bundle the app)"
+        - "Some other way (describe it below)"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: input
+    id: app-version
+    attributes:
+      label: App / build version
+      description: >-
+        `CFBundleShortVersionString` in `Packaging/Info.plist` (currently `0.1.0`),
+        the commit you built from (`git rev-parse --short HEAD`), and — for a packaged
+        build — the contents of `dist/build-info.txt` (written by `make-app.sh` step
+        6/6: version, minimum system, signing identity, entitlements tier, SHA-256s).
+      placeholder: "0.1.0, built at a1b2c3d, build-info: ad-hoc / BASE entitlements"
+    validations:
+      required: true
+
+  - type: textarea
+    id: data-directory
+    attributes:
+      label: Where is your data directory, and what is in it
+      description: >-
+        Paste the output of the read-only checks below, and say which rule of
+        `Sources/AIObservatoryApp/DataLocation.swift` you hit. Resolution order:
+        **(1)** `AIOBSERVATORY_DATA_DIR` is set and non-empty -> that directory
+        (`:24-26`); **(2)** packaged run, i.e. bundle id `com.aix.aiobservatory`
+        *and* the executable lives under `*.app/Contents/MacOS` (`:34-38`) ->
+        `~/Library/Application Support/com.aix.aiobservatory/` (`:27-28`);
+        **(3)** anything else (SwiftPM bare binary, agent/CI-driven run) ->
+        `observatory-data/` in the repo, found by walking up to 6 levels for
+        `Package.swift` (`:42-53`), else `AIObservatoryDev` under the system temp
+        dir; **(4)** directory creation fails -> empty string, and the engine
+        degrades to an **in-memory** store without crashing or silently writing
+        elsewhere (`:55-64`, `ObservatoryEngine.swift:141`). Case (4) explains
+        "no history at all" reports.
+
+        ```bash
+        ls -la ~/Library/Application\ Support/com.aix.aiobservatory/ 2>/dev/null || echo "no packaged data dir"
+        ls -la observatory-data/ 2>/dev/null || echo "no dev data dir"
+        env | grep '^AIOBSERVATORY_DATA_DIR=' || echo "AIOBSERVATORY_DATA_DIR not set"
+        ```
+
+        Do **not** paste database contents — only the `ls` output above.
+      placeholder: |
+        AIOBSERVATORY_DATA_DIR not set; packaged data dir absent; observatory-data/ contains:
+        observatory.sqlite  observatory.sqlite-wal  observatory.sqlite-shm
+    validations:
+      required: true
+
+  - type: dropdown
+    id: attachment-intent
+    attributes:
+      label: Will you attach anything from that directory
+      description: >-
+        Decide before you type. Screenshots of a window may show other windows and
+        real paths; `log show --predicate 'subsystem == "com.aix.aiobservatory"'`
+        lines may contain audited process paths and argv
+        (`Documentation/PRIVACY.md` §1).
+      options:
+        - "No — I will paste only text I have read and hand-edited"
+        - "Yes — a Markdown/CSV/JSON report from the app's own export, redaction left ON"
+        - "Yes — a hand-edited copy where I replaced paths, usernames and project names"
+        - "Yes — a screenshot (I have checked what else it shows)"
+        - "I have not decided / I do not know what is safe here"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: redaction-ack
+    attributes:
+      label: Disclosure acknowledgement
+      description: Tick both, or stop and open a private channel with the maintainers instead.
+      options:
+        - label: >-
+            I understand `ExportRedactor` masks credential shapes only (11 kinds,
+            values not key names) and does **not** mask absolute paths, usernames,
+            project names or file names in argv — so any export or screenshot I
+            attach still identifies me and my machine.
+          required: true
+        - label: >-
+            I will not attach `observatory.sqlite` or its `-wal` / `-shm` sidecars to
+            this issue, in any archive format and under any "it is a private repo"
+            assumption.
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: >-
+        Describe the observed behaviour in a few sentences first, before any
+        analysis. Include the exact error text or the exit code, and say what you
+        expected instead. If the process vanished with no output, check whether it
+        was exit 137 / SIGKILL and say so — see the EndpointSecurity question below.
+      placeholder: Launching dist/AIObservatory.app shows no window and the process is gone within a second.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: >-
+        Numbered, starting from a clean checkout. Name the command you actually
+        typed, and include relevant settings: scan interval,
+        `retentionDays` (default 30, `ServiceProtocols.swift:114`), whether you
+        triggered "观测 > 立即重新扫描" (⌘⇧R,
+        `Sources/AIObservatoryApp/AIObservatoryApp.swift:60-63`). Note that
+        settings do **not** persist across launches in this version, so re-check
+        them after a restart.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: Expected vs actual
+      description: >-
+        Two short blocks. For performance reports, quote the budget from `AGENTS.md`
+        §6 (idle CPU < 1% target / 3% cap, resident memory < 120 MB / 200 MB cap,
+        process scan < 50 ms / 150 ms per pass) and measure CPU as
+        "cumulative CPU-time delta / wall-clock delta" over a window of at least 60
+        seconds — `ps -o %cpu` is a decaying average and is not a valid
+        measurement here, and a machine under load is not a valid measurement either.
+      value: |
+        **Expected:**
+
+        **Actual:**
+    validations:
+      required: true
+
+  - type: textarea
+    id: fresh-data-dir
+    attributes:
+      label: Does it reproduce with the data directory pointed at a fresh empty directory
+      description: >-
+        This is the single most useful experiment, because it separates "bug in the
+        current database / accumulated history" from "bug in the code path". Re-run
+        with `AIOBSERVATORY_DATA_DIR` (name from `DataLocation.swift:24`; keep it
+        **inside** your checkout, since an empty-string value counts as unset —
+        `:24` requires non-empty — and an unwritable target silently switches the
+        store to in-memory rather than reporting an error):
+
+        ```bash
+        mkdir -p tmp/issue-repro
+        AIOBSERVATORY_DATA_DIR="$PWD/tmp/issue-repro" open dist/AIObservatory.app
+        # or, for the bare debug binary:
+        # AIOBSERVATORY_DATA_DIR="$PWD/tmp/issue-repro" .build/debug/AIObservatory &
+        # …reproduce, then destroy the data you just created:
+        rm -rf tmp/issue-repro
+        ```
+
+        Report: does it still happen? Does the freshly-named `observatory.sqlite` get
+        created at all? Delete the scratch directory afterwards.
+      placeholder: Reproduces on a fresh empty data dir (so it is not corrupt state) / Does not reproduce — only with my existing observatory-data directory.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: es-involved
+    attributes:
+      label: Was EndpointSecurity involved
+      description: >-
+        Honest framing, so a bug report here is not chased down the wrong path:
+        **EndpointSecurity is not a working feature in this build.**
+        `EndpointSecurityMonitor` is a capability probe, not an event subscriber —
+        its own header says so
+        (`Sources/AIObservatoryPlatform/AgentDetection/EndpointSecurityMonitor.swift:17-18`),
+        and `probeCapability()` (`:45`) does `dlopen` -> `es_new_client` ->
+        immediately `es_delete_client` and reports `.endPointSecurity` or falls back
+        to `.processPolling`. The `enableEndpointSecurity` setting defaults to `false`
+        (`ServiceProtocols.swift:115`) and has no effect on collection
+        (`SettingsPrivacyPane.swift:87` is a UI draft value). What actually collects
+        today is non-privileged **libproc polling** plus `FSEventsWatcher`
+        (`ObservatoryEngine.swift:98-108`). And the opt-in entitlements tier is a trap:
+        `AIX_ES_ENTITLEMENTS=1 Packaging/make-app.sh` yields an ad-hoc-signed bundle
+        that AMFI **SIGKILLs at exec — exit 137, no userland output**
+        (`Packaging/ENTITLEMENTS-NOTES.md` §2.2). That kill is expected behaviour, not
+        an Engine crash.
+      options:
+        - "No — I never touched ES (default libproc polling path)"
+        - "I flipped the EndpointSecurity switch in Settings > Privacy"
+        - "I built with AIX_ES_ENTITLEMENTS=1 Packaging/make-app.sh and the app died immediately (exit 137 / SIGKILL)"
+        - "A crash report or log line mentions EndpointSecurity / es_new_client"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: es-detail
+    attributes:
+      label: EndpointSecurity detail
+      description: >-
+        Optional — fill it in only if you picked something other than "No" above.
+        Say which entitlements tier your bundle has (BASE =
+        `Packaging/Observatory-App.entitlements`, empty dictionary; optional =
+        `Packaging/Observatory-App-Optional-EndpointSecurity.entitlements`) and paste
+        the *entitlements tier* line from `dist/build-info.txt`. Do not paste
+        `codesign -d --entitlements -` output for anything besides these two files.
+        If your symptom is "launches then disappears with exit 137" on the optional
+        tier, that is the documented AMFI outcome — file it as documentation feedback
+        or use the BASE tier, not as an Engine bug.
+      placeholder: build-info reports the optional ES tier; exec kills with 137 after ~0s.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: agents-involved
+    attributes:
+      label: Which agent(s) was the observation about
+      description: >-
+        `AgentKind` in `Sources/AIObservatoryCore/Contracts/DomainModels.swift` names
+        these; detection is signature-based
+        (`Sources/AIObservatoryPlatform/AgentDetection/AgentSignatureDatabase.swift`)
+        over macOS processes only, so a renamed or differently-distributed CLI will not
+        be identified — "an agent is missing from the list" is a product limitation
+        (`Documentation/SECURITY.md` T4) before it is a bug. Multi-select.
+      multiple: true
+      options:
+        - Claude Code
+        - Codex (OpenAI)
+        - Cursor Agent
+        - VS Code Copilot
+        - Windsurf
+        - Gemini CLI
+        - Aider
+        - Generic / unknown CLI agent
+        - None / not agent-specific
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs-and-crash
+    attributes:
+      label: Crash report or log lines (sanitised)
+      description: >-
+        Paste only lines you have read. The app logs via `OSLog` under subsystem
+        `com.aix.aiobservatory` (`Sources/AIObservatoryCore/Contracts/ObservatoryLog.swift:12-21`,
+        categories `engine`, `agent-detection`, `file-tracking`, `telemetry`,
+        `security`, `store`, `ui`, `bootstrap`), the app writes **no log file of its
+        own** (the only `.log` in the toolchain is `.build/verify-build.log`, a build
+        log from `Scripts/verify.sh:16`) and there is **no diagnostic-bundle export**
+        — retention of those unified-log lines is controlled by macOS, not by this app,
+        so capture them soon. If you have a `.ips` crash report, keep the exception
+        type, the top frames of the faulting thread and the termination reason; replace
+        your home directory, every absolute path and any argv block with placeholders
+        before pasting.
+      value: |
+        ```
+        paste sanitised lines here
+        ```
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: presubmission
+    attributes:
+      label: Before you submit
+      options:
+        - label: >-
+            I have read `AGENTS.md` at the repository root — in particular §0
+            (working-directory boundaries), §7 (all data stays local, credentials are
+            not collected) and §4 (definition of done: what a maintainer treats as a
+            real fix rather than a patch).
+          required: true
+        - label: >-
+            I searched the existing issues, open **and closed**, for my symptom and
+            linked anything relevant above.
+          required: true
+        - label: >-
+            I understand this project is local-only by design: there is no telemetry,
+            no crash reporting and no "upload my logs to you" workflow, so attaching
+            raw observatory data to a public issue is the *only* way information can
+            leave my machine here — and it is the way I should not choose.
+          required: true
+        - label: >-
+            Everything I attached is either hand-typed or copy-pasted after I read it,
+            with absolute paths, usernames and project names replaced by placeholders
+            such as `/Users/<me>/…`.
+          required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ### After you file
+
+        * Maintainers triage against the code, not against your machine: an issue that
+          cites `file:line` you actually have, and a `AIOBSERVATORY_DATA_DIR` fresh-dir
+          result, moves fastest.
+        * If your problem is a privacy concern rather than a defect — "why is this path
+          in my database at all", "I want less collected", a missing redaction category
+          — use the **privacy report** template instead; it routes to a different set of
+          owners and a different set of docs (`Documentation/PRIVACY.md`,
+          `Documentation/SECURITY.md`).
+        * Versions, minimum system and the packaging entry point above are quoted from
+          this repository's files, not from GitHub settings: nothing is auto-created for
+          you, and the `bug` / `triage` labels must exist in the repository for GitHub to
+          apply them.

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	PrivacyInfo.xcprivacy — AI Agent Activity Observatory (macOS, bundle id com.aix.aiobservatory)
+
+	本清单为**手工按代码事实编写**，不是模板。每一条 NSPrivacyAccessedAPITypes
+	都必须能在 Sources/ 里指到一个真实调用点；指不到调用点的类别一律不声明。
+
+	逐条 file:line 证据、以及「检查过但未声明」的完整清单见：
+		Documentation/PRIVACY-EVIDENCE.md
+	面向使用者的隐私事实见：
+		Documentation/PRIVACY.md
+
+	要点：
+	  · NSPrivacyTracking = false，NSPrivacyTrackingDomains 为空 —— 源码里
+	    不存在任何网络调用点（无 URLSession / socket / Network.framework /
+	    getaddrinfo），不存在可被声明为 tracking 的域名。
+	  · NSPrivacyCollectedDataTypes 为空 —— 本应用不向开发者或任何第三方
+	    上传任何数据；「采集」在 App Store 隐私语义里指数据离开设备并被
+	    开发者或其方读取，本应用全部数据只落在本机。
+	  · 唯一声明的类别是 System boot time，理由码 35F9.1（见证据文件）。
+	  · libproc / sysctl 进程扫描与 dlopen/dlsym 是**真实存在的调用点**，
+	    但截至本文件编写时无法从 Apple 文档核实对应的类别常量与理由码，
+	    故按「宁可漏报也不编造」原则**故意未声明**，已在证据文件中列为待办。
+-->
+<plist version="1.0">
+<dict>
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<!-- 证据：Sources/AIObservatoryPlatform/AgentDetection/LibprocProcessInspector.swift:76
+		     （DispatchTime.now().uptimeNanoseconds，用于 :196-214 的两次采样墙钟差 ΔWall）
+		     用途：计算进程 CPU 占用率的时间间隔，即「自上次采样以来经过了多少时间」。
+		     本应用不读取、不记录、也不上报机器的绝对启动时刻。 -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>35F9.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

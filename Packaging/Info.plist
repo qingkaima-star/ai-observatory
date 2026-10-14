@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ============================================================================
+  Packaging/Info.plist — AiX
+  bundle 元数据的**唯一真值源**：任何 bundle 里的 Info.plist 都必须来自本文件，
+  不允许在脚本里用 heredoc + 变量插值现写第二份。
+  Owner: WS-Packaging
+
+  消费方式：Packaging/make-app.sh（唯一打包入口）把本文件原样拷入
+  `AIObservatory.app/Contents/Info.plist`，仅在两个位置做覆写：
+    · CFBundleShortVersionString / CFBundleVersion —— 当构建者显式传环境变量时；
+    · CFBundleIconFile —— 由 make-app.sh 在 .icns 存在时写入（已存在，见下文）。
+  因此本文件里的注释会随包发布。这是有意为之：注释里写的是「这个键为什么在这」，
+  审阅者无需回到源码树即可复核。LaunchServices 忽略 XML 注释，不影响加载。
+
+  改本文件前先读：
+    · AiX-Vault/04-决策记录/ADR-0003-数据库落盘位置.md  （数据目录解析规则）
+    · Sources/AIObservatoryApp/DataLocation.swift       （同上，代码版）
+    · Documentation/SECURITY.md 第 4 节                 （无沙箱的取舍）
+  ============================================================================
+-->
+<plist version="1.0">
+<dict>
+
+  <!-- ── 身份三件套：必须与代码里的常量逐字一致，改动即破坏数据目录判定 ── -->
+
+  <!-- CFBundleExecutable = SwiftPM 产品名。Package.swift:26 声明
+       .executable(name: "AIObservatory", targets: ["AIObservatoryApp"])，
+       make-app.sh 把编译产物拷成 Contents/MacOS/AIObservatory，名字必须相同。
+       注意它**不是**人读标题：人读标题在 CFBundleName / CFBundleDisplayName。 -->
+  <key>CFBundleExecutable</key>
+  <string>AIObservatory</string>
+
+  <!-- CFBundleIdentifier：DataLocation.swift:36 用 `Bundle.main.bundleIdentifier
+       == "com.aix.aiobservatory"` 判定「是否正式运行」，据此决定数据库写
+       ~/Library/Application Support/com.aix.aiobservatory/ 还是仓库内
+       observatory-data/（ADR-0003 决策第 2、3 条）。同串还被
+       PathFilter.swift:46,54 用于自我抑制（避免观测到自己的写入形成回环），
+       以及 ObservatoryLog.swift:12 的 os_log subsystem。
+       ⇒ 这个值改掉 = 正式安装的 App 静默退化为「开发期路径」判定，
+         同时 PathFilter 的自抑制失效。不可随意改。 -->
+  <key>CFBundleIdentifier</key>
+  <string>com.aix.aiobservatory</string>
+
+  <!-- CFBundleName：Finder/Dock 提示与窗口菜单里显示的名字，上限 15 字符是
+       Xcode 模板的惯例而非系统强制；2026-09-20 起取值 `AiX`（应用名由用户指定；此前这里显示的是产品描述全称）。
+       人读全名在下面的 CFBundleDisplayName。 -->
+  <key>CFBundleName</key>
+  <string>AiX</string>
+
+  <!-- CFBundleDisplayName：Finder 与「关于本机/登录项」列表里显示的产品全名。
+       与窗口标题一致（外壳 mainWindow 场景里的 Window("AiX")）。 -->
+  <key>CFBundleDisplayName</key>
+  <string>AiX</string>
+
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+
+  <!-- ── 版本：真值源在本文件。make-app.sh 只允许通过
+       AIX_SHORT_VERSION / AIX_BUILD_VERSION 环境变量在构建时覆写，
+       不允许在任何脚本里硬编码另一套数字。 ── -->
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+
+  <key>CFBundleVersion</key>
+  <string>1</string>
+
+  <!-- 历史遗留但仍有工具在读；固定为 "1.0"。 -->
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>1.0</string>
+
+  <!-- ── 系统前提 ── -->
+  <!-- 与 Package.swift:14 `.macOS("26.0")` 逐字对齐：SwiftPM 的 platform 声明
+       只管编译期可用性检查，不会自动落到 Info.plist。不写这个键的话，
+       在更老的系统上 LaunchServices 会照样放行、然后在运行时因符号缺失崩溃。 -->
+  <key>LSMinimumSystemVersion</key>
+  <string>26.0</string>
+
+  <!-- ── 语言 ── -->
+  <!-- 开发语言 = zh_CN：仓库里所有硬编码人读字符串都是中文
+       （AIObservatoryApp.swift:57 `CommandMenu("观测")`、:61 Button("立即重新扫描")；
+       MenuBarContentView.swift:98 "活跃 Agent"、:150 "数据仅存本机 · 不上传"）。
+       如实声明 zh_CN 而不是套模板填 en。
+       事实边界：本 bundle **零** .lproj 资源，因此这个键当前不选择任何界面语言，
+       纯信息性；等真的做本地化（en.lproj 等）时必须回来复核这条。 -->
+  <key>CFBundleDevelopmentRegion</key>
+  <string>zh_CN</string>
+
+  <!-- ── 法律／产品声明 ──
+       2026-09-20 owner 已定：Apache-2.0，版权主体 = "AiX Project Authors"
+       （仓库根 LICENSE，第 189 行；刻意不含任何个人邮箱）。
+       所以这里首次可以正面声明许可证，并与 LICENSE 的措辞对齐；
+       两处口径不一致时**以 LICENSE 为准**，回来改这里。
+       保留「数据不出本机」这句：它是产品前提（AGENTS.md 第 7 节；
+       Documentation/PRIVACY.md），把它放在「关于」面板能读到的位置上。
+       本键是**唯一真值源**：打包只剩一条入口（Packaging/make-app.sh 原样拷本文件），
+       不存在第二个脚本再写一份版权串的路径 ⇒ 「关于」面板与本文件不可能不一致。 -->
+  <key>NSHumanReadableCopyright</key>
+  <string>© 2026 AiX Project Authors · Apache-2.0 · 数据仅存本机，不上传 · Local-only: no data leaves this machine</string>
+
+  <!-- ── AppKit 装配 ── -->
+  <!-- @main 的 SwiftUI App 结构体自己接管 -main，
+       但仍需要一个 NSApplication 作为进程内的 AppKit 锚点：
+       外壳的 @NSApplicationDelegateAdaptor、AppDelegate 里的
+       setActivationPolicy(.regular) / activate(ignoringOtherApps:)、
+       以及 mainWindow 上的 .windowToolbarStyle(.unified) 都走 AppKit。
+       （此处刻意用符号名而不是行号：外壳文件每次合入都会位移。）
+       显式声明 NSApplication 而不是依赖隐式推断：裸 SwiftPM 可执行文件升级为
+       .regular 的过程中，这个键决定了 LaunchServices 拉起的是哪个主类。
+       注：裸 SwiftPM 可执行文件在以前不写此键时也能启动（真机验证过），
+       所以这是「把隐式行为写成显式契约」，不是缺陷修复。 -->
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+
+  <!-- Dashboard 是 Swift Charts + 位图密集区；显式声明以避免非 Retina 路径下
+       的后备缩放。同为「写成显式契约」，make-app.sh:38 已带此键，保持不变。 -->
+  <key>NSHighResolutionCapable</key>
+  <true/>
+
+  <!-- 归类为开发者工具：观测对象是 Codex / Claude Code / Cursor Agent 进程，
+       用户是跑这些工具的人。影响 Launchpad/「关于」的类目，不影响权限。 -->
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.developer-tools</string>
+
+  <!-- ── LSUIElement ──
+       决策：当前发布 **false**（与 App 的 .regular 前台形态一致），不是遗漏。
+
+       为什么现在不能 true：
+       LSUIElement=true 让 LaunchServices 以 accessory（无 Dock 图块、无主菜单）
+       策略启动进程；而外壳的 AppDelegate.applicationDidFinishLaunching 无条件调用
+       setActivationPolicy(.regular) + activate(ignoringOtherApps: true)。
+       两者叠加 = 先按 accessory 建场景，再从 delegate 里强推成 regular：
+         · mainWindow 的 Window 与 settingsWindow 的 Settings 场景会在
+           .prohibited/.accessory 阶段建立，主菜单与 ⌘, 在此之前不可用；
+         · activate() 从非 regular 进程发出并不可靠。
+       即：一个真窗口正在工作的 App，不该先戴上面无 Dock 的帽子。
+       （外壳里「SPM 可执行文件默认不是 regular app，需要显式提升」那条注释说明
+        setActivationPolicy 是为**裸可执行文件**准备的，正好对应 LSUIElement=false。）
+
+       本块刻意**不写行号**：外壳文件每次合并都会位移（本轮实测 AIObservatoryApp.swift
+       的行号已全部漂移），符号名才是稳定引用。
+
+       未来的「彻底关掉主窗口」路径（MenuBarExtra 已落地在外壳的 menuBar 场景；
+       IFR-ui-menubar.md 的请求 1 已完成）：
+         1. 总控在 AIObservatoryApp 里按设置提供两套 Scene（外壳注释已说明 Scene 是
+            静态的、无法凭 enableMenuBarExtra 运行时增删，这正是 ADR-0004 待办）；
+         2. 菜单栏形态下删掉 / 条件化 AppDelegate 里的 setActivationPolicy(.regular)，
+            改为 .accessory，并处理「从菜单栏唤回主窗口」的激活时序；
+         3. 那时把本键翻成 true 才有意义。
+       ⇒ 迁移是「代码 + plist」两步，翻 plist 单独做会破坏当前窗口。 -->
+  <key>LSUIElement</key>
+  <false/>
+
+  <!-- ── 终止语义 ──
+       决策：false —— 明确拒绝「突然终止」。
+
+       依据：这是一个审计记录器，其价值定义就是「不漏」。写入是批量提交的
+       （AGENTS.md 第 6 节：单次 ≥ 32 行；实现见 Store/BatchWriter.swift:143），
+       内存里始终压着一批未落盘的事件。NSSupportsSuddenTermination=true 允许
+       系统在登出／重启时直接杀死进程而不走 -terminate:，那一批就没了。
+
+       顺带记录一个真实缺口（不在打包层，交给总控）：外壳的 AppDelegate
+       （:88-97）没有实现 applicationShouldTerminate(_:)，全仓也没有任何地方
+       调用 ObservatoryEngine.stop()（定义在 Engine/ObservatoryEngine.swift:247：
+       取消轮询循环 → closeAll(.interrupted) 结算未闭合会话 → flush 缓冲）
+       与 ObservatoryStore.stop()（Store/ObservatoryStore.swift:69-75：
+       flush → PRAGMA wal_checkpoint(TRUNCATE)）。
+       ⇒ 目前连正常「退出」都不会结算会话、不会 checkpoint；WAL 的崩溃自愈
+         保证了「不损坏」，但代价是每次退出都把未闭合会话留给下次启动去推断。
+         把这个 hook 接上之后，本键仍应保持 false。
+
+       同类键 NSSupportsAutomaticTermination 有意**不写**：默认即 false，
+       而 true 会让系统在 App 空闲时自行回收它 —— 与「观测器常驻」直接矛盾
+       （总控的验收判据之一就是 app stays resident）。写一个 false 只是模板噪声。 -->
+  <key>NSSupportsSuddenTermination</key>
+  <false/>
+
+  <!-- ── 图标：CFBundleIconFile 由 make-app.sh 写；CFBundleIconName 有意缺失 ──
+       2026-09-20 更新：图标资源已落地（`Packaging/AppIcon.icns`，
+       由 `Packaging/make-icon.swift` 从 `Packaging/icon-source.png` 确定性重建）。
+       make-app.sh 第 3 步探测到它就拷进 Contents/Resources/ 并写出
+       CFBundleIconFile=AppIcon —— 本文件里**不预先写这个键**，
+       因为「键存在但文件没拷进去」比键缺失更糟（Finder 会显示 generic 图标外加一条无谓的怀疑点）。
+
+       CFBundleIconName 仍然**永远不该出现在这里**：它专用于 asset catalog 里的图标名，
+       而当前的构建方式（ADR-0001 决策 1：SwiftPM 而非 .xcodeproj）不会运行 actool，
+       因此不可能产出 Assets.car，该键无从解析。要改成 asset catalog 就得先换构建方式。 -->
+
+</dict>
+</plist>

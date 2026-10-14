@@ -1,0 +1,3 @@
+pages_without_observatorypage=0
+self_drawn_axis_files=0
+forbidden_construct_hits=5

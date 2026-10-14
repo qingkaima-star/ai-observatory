@@ -1,0 +1,40 @@
+# macOS
+.DS_Store
+._*
+
+# SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+*.xcuserstate
+
+# 构建产物
+dist/
+build/
+*.app
+
+# 本地运行数据（观测器自身的数据库不纳入版本控制）
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+observatory-data/
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+
+.scratch-db/
+
+# 测试 scratch 目录（每个检出/工作树各一份，见 AIObservatoryTestSupport/Scratch.swift）
+.scratch-tests/
+
+# 真机验证：合成 Agent 临时产物与本地验证数据目录（绝不入库）
+Tools/AgentFixture/work/
+tmp/
+observatory-data/

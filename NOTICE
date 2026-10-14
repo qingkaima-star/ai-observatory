@@ -1,0 +1,13 @@
+AiX
+Copyright 2026 AiX Project Authors
+
+This is the public release of the project, distributed under the Apache License,
+Version 2.0 (see LICENSE).
+
+Note on history: this repository intentionally starts from a single squashed
+commit. The internal development history (including per-workstream review and
+decision records) is kept out of the public repository on purpose, because it
+contains author identities that were never intended to be published.
+Consequently `git blame` and `git log` here are not an audit trail; the
+engineering rationale for individual changes lives in the documentation under
+Documentation/ (start with README.md, SECURITY.md and PRIVACY.md).
