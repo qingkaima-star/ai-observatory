@@ -152,13 +152,15 @@ jobs:
           # GitHub 的 step 包装自带 -e，而本步的五条判据都是「grep 空命中=返回 1」的管道：
           # -e + pipefail 会让步在第一条 n= 赋值处静默退出（首跑实测：零 stdout、exit 1）。
           # 本步的成败靠 fail 标志与结尾 exit 1 表达，故显式关掉 -e。
+          # 另一个 bash 3.2 坑：全角字符紧跟裸变量名会被吞进变量名（`$n1（` → unbound variable），
+          # 故本步变量一律花括号（runner 首跑实测：零 stdout、exit 1）。
           set +e
           fail=0
           strip_comments() { grep -vE ':[[:space:]]*(//|///|\*|/\*)'; }
 
           # G1 生产代码里不允许出现任何个人路径字面量（今天真值：0）。
           n1=$(grep -rn "/[U]sers/one" Sources/ 2>/dev/null | strip_comments | wc -l | tr -d ' ')
-          echo "G1 Sources/ 非注释个人路径字面量: $n1（必须为 0）"
+          echo "G1 Sources/ 非注释个人路径字面量: ${n1}（必须为 0）"
           if [ "$n1" != "0" ]; then
             grep -rn "/[U]sers/one" Sources/ | strip_comments
             echo "::error::Sources/ 出现写死的绝对个人路径（/Users/<account>/…）：生产代码不得依赖某一个人的检出目录"
@@ -167,7 +169,7 @@ jobs:
 
           # G2 本工作树的 scratch 根只允许出现在 Scratch.swift 自己的实现里（今天真值：0）。
           n2=$(grep -rn '\.worktrees/[.]scratch' Sources Tests --exclude=Scratch.swift 2>/dev/null | wc -l | tr -d ' ')
-          echo "G2 Scratch.swift 之外写死 .worktrees/.scratch: $n2（必须为 0）"
+          echo "G2 Scratch.swift 之外写死 .worktrees/.scratch: ${n2}（必须为 0）"
           if [ "$n2" != "0" ]; then
             grep -rn '\.worktrees/[.]scratch' Sources Tests --exclude=Scratch.swift
             echo "::error::改用 Scratch.root / Scratch.path(...)（Sources/AIObservatoryTestSupport/Scratch.swift）"
@@ -176,7 +178,7 @@ jobs:
 
           # G3 不得对字面量个人路径落盘（这是 FINDING-1 的真实故障类；今天真值：0）。
           n3=$(grep -rn '"/[U]sers/one' Sources Tests 2>/dev/null | grep -c 'createDirectory' || true)
-          echo "G3 以绝对个人路径字面量为目标的 createDirectory: $n3（必须为 0）"
+          echo "G3 以绝对个人路径字面量为目标的 createDirectory: ${n3}（必须为 0）"
           if [ "${n3:-0}" != "0" ]; then
             grep -rn '"/[U]sers/one' Sources Tests | grep 'createDirectory'
             echo "::error::测试会在某个人的目录里建真目录，托管 runner 上必然失败"
@@ -192,9 +194,9 @@ jobs:
           # ⇒ 棘轮的存量清零之后必须把上限跟着降下来，否则"只准降不准升"守的是一个不存在的额度。
           ceiling=0
           n4=$(grep -rn "/[U]sers/one" Tests/ 2>/dev/null | strip_comments | wc -l | tr -d ' ')
-          echo "G4 Tests/ 非注释个人路径字面量: $n4（棘轮上限 $ceiling，只准降不准升）"
+          echo "G4 Tests/ 非注释个人路径字面量: ${n4}（棘轮上限 ${ceiling}，只准降不准升）"
           if [ "$n4" -gt "$ceiling" ]; then
-            echo "::error::个人路径字面量比基线更多（$n4 > $ceiling）。合成数据请用不含真实用户名的路径（如 /Users/tester/…），落盘一律走 Scratch.path(...)。"
+            echo "::error::个人路径字面量比基线更多（${n4} > ${ceiling}）。合成数据请用不含真实用户名的路径（如 /Users/tester/…），落盘一律走 Scratch.path(...)。"
             fail=1
           fi
 
@@ -203,7 +205,7 @@ jobs:
           # 两条口径不重合的差额就是能溜过去的东西（ProjectCard 那两行正是纯注释命中）。
           # 用 git grep 只查被跟踪文件：天然排除 tmp/ 与 .build/，也不撞 worktree 的 `.git` 指针文件。
           n5=$(git grep -I -c -- "/[U]sers/one" 2>/dev/null | wc -l | tr -d ' ')
-          echo "G5 被跟踪文件里含注释的个人路径（按文件数）: $n5（必须为 0）"
+          echo "G5 被跟踪文件里含注释的个人路径（按文件数）: ${n5}（必须为 0）"
           if [ "$n5" != "0" ]; then
             git grep -I -n -- "/[U]sers/one"
             echo "::error::本机目录布局被写进公开产物（注释也算）。改法见 Sources/AIObservatoryTestSupport/FixturePaths.swift 头注释。"
