@@ -220,11 +220,6 @@ jobs:
     needs: privacy-guard
     runs-on: macos-26
     timeout-minutes: 60
-    env:
-      # DataLocation.swift:24 是全仓库唯一读取该变量的地方（App target）；放这里保证
-      # 万一某步把 App 跑起来，数据也不落 ~/Library 与仓库（ADR-0003 规则 2/3）。
-      # runner 上下文只在 job 级及以下可用——放工作流级 env 曾让首跑启动失败。
-      AIOBSERVATORY_DATA_DIR: ${{ runner.temp }}/aix-data
     strategy:
       fail-fast: false
       matrix:
@@ -287,6 +282,8 @@ jobs:
       - name: 单元测试（全量，门禁）
         env:
           AIOBSERVATORY_TEST_SCRATCH: ${{ runner.temp }}/scratch-tests
+          # runner 上下文实测只到 step 级：工作流级与 job 级 env 都会让 run 启动失败（2026-10-15）。
+          AIOBSERVATORY_DATA_DIR: ${{ runner.temp }}/aix-data
         run: |
           set -euo pipefail
           xcrun swift test 2>&1 | tee "$RUNNER_TEMP/test.log"
@@ -325,9 +322,6 @@ jobs:
     needs: build-test
     runs-on: macos-26
     timeout-minutes: 45
-    env:
-      # 理由同 build-test：runner 上下文只在 job 级及以下可用。
-      AIOBSERVATORY_DATA_DIR: ${{ runner.temp }}/aix-data
     steps:
       - uses: actions/checkout@v7
 
@@ -335,6 +329,9 @@ jobs:
         run: xcrun swift build -c release --product AIObservatory
 
       - name: 组装 bundle（唯一入口 Packaging/make-app.sh，CI 形态不带沙箱绕过 flag）
+        env:
+          # 防御性：万一打包路径真的启动了 App，数据也只落 runner 临时目录（ADR-0003 规则 2/3）。
+          AIOBSERVATORY_DATA_DIR: ${{ runner.temp }}/aix-data
         run: |
           set -euo pipefail
           # 不再在 workflow 里内联组装第二份 bundle 逻辑：那样 CI 验出来的包
