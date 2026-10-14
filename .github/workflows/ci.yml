@@ -149,6 +149,10 @@ jobs:
         # 任何一条变红都必须是回归，不是噪声。
         run: |
           set -uo pipefail
+          # GitHub 的 step 包装自带 -e，而本步的五条判据都是「grep 空命中=返回 1」的管道：
+          # -e + pipefail 会让步在第一条 n= 赋值处静默退出（首跑实测：零 stdout、exit 1）。
+          # 本步的成败靠 fail 标志与结尾 exit 1 表达，故显式关掉 -e。
+          set +e
           fail=0
           strip_comments() { grep -vE ':[[:space:]]*(//|///|\*|/\*)'; }
 
